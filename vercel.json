@@ -1,0 +1,12 @@
+{
+  "name": "mec-assistant",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MEC Assistant - RAG-based college chatbot with Supabase + pgvector + OpenAI",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "pdf-parse": "^1.1.1",
+    "mammoth": "^1.7.2",
+    "busboy": "^1.6.0"
+  }
+}

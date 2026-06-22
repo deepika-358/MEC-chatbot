@@ -1,0 +1,90 @@
+-- ============================================================
+-- MEC Assistant — Supabase schema
+-- Run this entire file in: Supabase Dashboard → SQL Editor → New query
+-- ============================================================
+
+-- 1. Enable the pgvector extension (needed for embedding/vector search)
+create extension if not exists vector;
+
+-- 2. Documents table — one row per uploaded file (pdf, docx, txt, image...)
+create table if not exists documents (
+  id uuid primary key default gen_random_uuid(),
+  filename text not null,
+  file_type text not null,           -- e.g. 'pdf', 'docx', 'txt', 'image'
+  category text default 'general',   -- e.g. 'syllabus', 'exam', 'handbook', 'event'
+  storage_path text not null,        -- path inside the Supabase Storage bucket
+  has_embeddings boolean default false,
+  uploaded_by uuid references auth.users(id),
+  created_at timestamptz default now()
+);
+
+-- 3. Document chunks — text split into pieces, each with its embedding vector
+--    text-embedding-3-small from OpenAI produces 1536-dimension vectors.
+create table if not exists document_chunks (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid references documents(id) on delete cascade,
+  chunk_index int not null,
+  content text not null,
+  embedding vector(1536),
+  created_at timestamptz default now()
+);
+
+-- Vector similarity index (cosine distance) for fast nearest-neighbour search
+create index if not exists document_chunks_embedding_idx
+  on document_chunks using ivfflat (embedding vector_cosine_ops)
+  with (lists = 100);
+
+-- 4. Chat history — every question asked + answer given, for admin to review
+create table if not exists chat_history (
+  id uuid primary key default gen_random_uuid(),
+  student_name text,                 -- optional, filled if student enters their name
+  session_id text not null,          -- random id generated per browser session
+  question text not null,
+  answer text not null,
+  matched_chunk_ids uuid[],          -- which chunks were used to answer (for transparency)
+  created_at timestamptz default now()
+);
+
+create index if not exists chat_history_student_idx on chat_history (student_name);
+create index if not exists chat_history_created_idx on chat_history (created_at desc);
+
+-- 5. Row Level Security — lock the tables down.
+--    All real reads/writes happen through serverless functions using the
+--    SERVICE ROLE key (which bypasses RLS). Enabling RLS with NO policies
+--    means the public anon key (used only for login on the frontend)
+--    cannot read/write these tables directly at all. This is intentional.
+alter table documents enable row level security;
+alter table document_chunks enable row level security;
+alter table chat_history enable row level security;
+
+-- 6. Similarity search function — called from the chat API via supabase.rpc()
+create or replace function match_document_chunks (
+  query_embedding vector(1536),
+  match_count int default 5,
+  match_threshold float default 0.3
+)
+returns table (
+  id uuid,
+  document_id uuid,
+  content text,
+  similarity float
+)
+language sql stable
+as $$
+  select
+    document_chunks.id,
+    document_chunks.document_id,
+    document_chunks.content,
+    1 - (document_chunks.embedding <=> query_embedding) as similarity
+  from document_chunks
+  where 1 - (document_chunks.embedding <=> query_embedding) > match_threshold
+  order by document_chunks.embedding <=> query_embedding
+  limit match_count;
+$$;
+
+-- ============================================================
+-- After running this file:
+-- 1. Go to Storage → Create a new bucket called "documents" (keep it PRIVATE).
+-- 2. Go to Authentication → Users → Add user → create your admin login
+--    (email + password). Do NOT enable public sign-ups in this app.
+-- ============================================================
